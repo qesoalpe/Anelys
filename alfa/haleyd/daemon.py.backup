@@ -1,0 +1,203 @@
+from sarah.acp_bson import Recipient, Pool_Handler
+from pymongo import MongoClient
+from sarah import dictutils
+from xml.dom import minidom
+from decimal import Decimal
+import json
+import pymysql as mariadb
+from haley.cfdiutils import parse_cfdi_xml
+from xmlutils import remove_empty_nodes
+import os
+import re
+from neo4j.v1 import GraphDatabase as GraphDatabase_bolt, basic_auth
+from neo4jrestclient.client import GraphDatabase as GraphDatabase_rest
+
+os.chdir(os.path.abspath(os.path.dirname(__file__)))
+
+f = open('config.json', 'rt')
+config = json.load(f)
+f.close()
+mariadb_config = config['maria']
+
+mongo_client = MongoClient(**config['mongo']['conn'])
+db_haley = mongo_client.get_database('haley')
+if 'auth' in config['mongo']:
+    db_haley.authenticate(**config['mongo']['auth'])
+coll_cfdi = db_haley.get_collection('cfdi')
+coll_cfdi_xml = db_haley.get_collection('cfdi_xml')
+
+if '8757-5' in config and 'rest_endpoint' in config['8757-5']:
+    d8757_5_rest = GraphDatabase_rest(config['8757-5']['rest_endpoint'], username=config['8757-5']['auth']['username'],
+                                      password=config['8757-5']['auth']['password'])
+else:
+    d8757_5_rest = GraphDatabase_rest('http://comercialpicazo.com:7474/db/data', username='alejandro', password='47exI4')
+
+if '8757-5' in config and 'bolt_endpoint' in config['8757-5']:
+    d8757_5_bolt = GraphDatabase_bolt.driver(config['8757-5']['bolt_endpoint'],
+                                             auth=basic_auth(config['8757-5']['auth']['username'],
+                                                             config['8757-5']['auth']['password']))
+else:
+    d8757_5_bolt = GraphDatabase_bolt.driver('bolt://comercialpicazo.com:7687', auth=basic_auth('alejandro', '47exI4'))
+
+
+def handle_action_parse_cfdi_xml(msg):
+    xmlstring = None
+    if msg['cfdi_type'] in ['xml_string', 'xml', 'xmlstring', 'string_xml', 'stringxml']:
+        xmlstring = msg['cfdi']
+    cfdi_xml = minidom.parseString(xmlstring)
+    remove_empty_nodes(cfdi_xml)
+    xmlstring = cfdi_xml.toxml()
+    tfd = cfdi_xml.getElementsByTagName('tfd:TimbreFiscalDigital')[0]
+    uuid = tfd.getAttribute('UUID')
+    saved = coll_cfdi.find_one({'uuid': uuid}, {'_id': False})
+    if saved is not None:
+        return {'cfdi': saved}
+    cfdi = parse_cfdi_xml(cfdi_xml)
+
+    if 'persist' in msg:
+        persist_cfdi = msg['persist']
+    else:
+        persist_cfdi = True
+    if persist_cfdi:
+        if msg['cfdi_type'] in ['xml_string', 'xml', 'xmlstring', 'string_xml', 'stringxml']:
+            coll_cfdi_xml.replace_one({'uuid': cfdi['uuid']},
+                                      {'type': 'haley/cfdi_xml', 'uuid': uuid,
+                                       'storage': 'xmlstring', 'xmlstring': xmlstring},
+                                      upsert=True)
+        dictutils.dec_to_float(cfdi)
+        coll_cfdi.insert_one(cfdi)
+        if '_id' in cfdi:
+            del cfdi['_id']
+        d5_node_cfdi = {'uuid': cfdi['uuid'], 'emitter_rfc': cfdi['emitter']['rfc'],
+                        'recipient_rfc': cfdi['recipient']['rfc'], 'voucher_effect': cfdi['voucher_effect'],
+                        'datetime': cfdi['datetime'], 'total': cfdi['total']}
+        if 'folio' in cfdi:
+            d5_node_cfdi['folio'] = cfdi['folio']
+        d5_session = d8757_5_bolt.session()
+        result = d5_session.run('MERGE (cfdi{uuid:{uuid}}) SET cfdi += {cfdi}, cfdi :haley_cfdi '
+                                'merge (emitter:haley_taxpayer{rfc:{emitter_rfc}}) '
+                                'merge (recipient:haley_taxpayer{rfc:{recipient_rfc}}) '
+                                'create unique (emitter)<-[:emitter]-(cfdi)-[:recipient]->(recipient);',
+                                {'uuid': d5_node_cfdi['uuid'], 'cfdi': d5_node_cfdi,
+                                 'emitter_rfc': cfdi['emitter']['rfc'], 'recipient_rfc': cfdi['recipient']['rfc']})
+        rr = result.single()
+        d5_session.close()
+    return {'cfdi': cfdi}
+
+
+def handle_find_haley_cfdi(msg):    
+    l_filter = dict()
+    if 'query' in msg:
+        for k1, v1 in msg['query'].items():
+            if k1 == 'emitter':
+                if isinstance(v1, str):
+                    l_filter['emitter.rfc'] = v1
+                elif isinstance(v1, dict):
+                    l_filter['emitter.rfc'] = v1['rfc']
+            elif k1 == 'recipient':
+                if isinstance(v1, str):
+                    l_filter['recipient.rfc'] = v1
+                elif isinstance(v1, dict):
+                    l_filter['recipient.rfc'] = v1['rfc']
+            elif k1 == 'datetime':
+                if isinstance(v1, str):
+                    l_filter['datetime'] = re.compile(v1 + '.*')
+                elif isinstance(v1, dict):
+                    l_filter['datetime'] = dict()
+                    if '!gt' in v1:
+                        l_filter['datetime']['$gt'] = v1['!gt']
+                    if '!lt' in v1:
+                        l_filter['datetime']['$lt'] = v1['lt']
+    cfdis = list()
+    for doc in coll_cfdi.find(l_filter, {'_id': False}):
+        cfdis.append(doc)
+    return {'result': cfdis}
+
+
+def handle_find_one_haley_cfdi(msg):
+    l_filt = dict()
+    if 'query' in msg:
+        for k1, v1 in msg['query'].items():
+            if k1 == 'uuid':
+                l_filt['uuid'] = v1
+    return {'result': coll_cfdi.find_one(l_filt, {'_id': False})}
+
+
+def handle_find_one_haley_cfdi_xml(msg):
+    cfdi_xml = coll_cfdi_xml.find_one(msg['query'], {'_id', False})
+    return {'result': cfdi_xml}
+
+
+def handle_get_taxing_item(msg):
+    item = msg['item']
+    mariadb_conn = mariadb.connect(**mariadb_config)
+    c1 = mariadb_conn.cursor(buffered=True)
+    c1.execute('SELECT DISTINCT taxs.id, taxs.tax, name, rate FROM haley.tax_sale AS taxs INNER JOIN '
+               'haley.items_taxing AS taxing ON taxing.tax_sale_id = taxs.id WHERE taxing.item_sku = %s;',
+               (item['sku'],))
+    reply = dict()
+    reply['item'] = item
+    if c1.rowcount == 0:
+        pass
+    elif c1.rowcount == 1:
+        id, tax_type, name, rate = c1.fetchone()
+        tax = {'id': id, 'tax': tax_type, 'name': name, 'rate': rate}
+        if not isinstance(item['price'], dict):
+            item['price'] = {'value': item['price']}
+        price = item['price']
+        before_tax = round(price['value'] / (Decimal('1') + rate), 6)
+        tax['value'] = round(before_tax * rate, 6)
+        price['tax'] = tax
+    elif c1.rowcount > 1:
+        taxs = list()
+        for id, tax_type, name, rate in c1:
+            taxs.append({'id': id, 'tax': tax_type, 'name': name, 'rate': rate})
+        price_value = None
+        if isinstance(item['price'], dict):
+            price_value = item['price']['value']
+        total_taxs_rate = Decimal()
+        for tax in taxs:
+            total_taxs_rate += tax['rate']
+        before_taxs = round(price_value / (Decimal('1') + total_taxs_rate), 6)
+        for tax in taxs:
+            tax['value'] = round(before_taxs * tax['rate'], 6)
+        if not isinstance(item['price'], dict):
+            item['price'] = {'value': item['price']}
+        price = item['price']
+        price['before_taxs'] = before_taxs
+        price['taxs'] = taxs
+    reply['item'] = item
+    c1.close()
+    mariadb_conn.close()
+    del mariadb_conn
+    return reply
+
+
+def handle_get_haley_cfdis_no_attached(msg):
+    d5_session = d8757_5_bolt.session()
+    result = d5_session.run('MATCH (recipient:haley_taxpayer{rfc:\'PILA960104HT8\'})<-[:recipient]-(cfdi:haley_cfdi) '
+                            'WHERE cfdi.datetime > \'2018-09-01\' AND cfdi.effect in [\'ingress\', \'egress\'] AND '
+                            'NOT ((cfdi)-[:attached]-()) RETURN cfdi.uuid as uuid')
+    cfdis_uuid = list()
+    for record in result:
+        cfdis_uuid.append(record['uuid'])
+    d5_session.close()
+    result = list()
+    for cfdi in coll_cfdi.find({'uuid': {'$in': cfdis_uuid}}, {'_id': False}):
+        result.append(cfdi)
+    return {'result': result}
+
+rr = Pool_Handler()
+rr.reg('type_message=action.action=haley/parse_cfdi_xml', handle_action_parse_cfdi_xml)
+rr.reg('type_message=find.type=haley/cfdi', handle_find_haley_cfdi)
+rr.reg('type_message=find_one.type=haley/cfdi', handle_find_one_haley_cfdi)
+rr.reg('type_message=find_one.type=haley/cfdi_xml', handle_find_one_haley_cfdi_xml)
+rr.reg('type_message=request.request_type=get.get=haley/cfdis_no_attached', handle_get_haley_cfdis_no_attached)
+read_msg = rr
+
+
+if __name__ == '__main__':
+    print("I'm haley.")
+    recipient = Recipient()
+    recipient.prepare('/haley', read_msg)
+    recipient.begin_receive_forever()

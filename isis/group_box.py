@@ -1,0 +1,1 @@
+from PySide2.QtWidgets import QGroupBox as Group_Box

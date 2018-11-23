@@ -1,0 +1,1 @@
+from PySide2.QtWidgets import QPlainTextEdit as Plain_Text_Edit

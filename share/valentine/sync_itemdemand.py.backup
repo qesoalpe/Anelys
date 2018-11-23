@@ -1,0 +1,100 @@
+import pymysql
+from sarah.acp_bson import Client
+import isodate
+import datetime
+from decimal import Decimal
+
+d8757_6 = pymysql.connect(host='quecosas.ddns.net', port=3305, user='alejandro', password='5175202', autocommit=True)
+d6_cursor = d8757_6.cursor(cursor=pymysql.cursors.DictCursor)
+agent_itzamara = Client('valentine.sync_itemdemand', 'itzamara')
+storage ={'id': '42-3'}
+itemsdemand = list()
+d6_cursor.execute('SELECT distinct item.sku as sku, item.description as description from itzamara.item inner join '
+                  'valentine.method_evaluation_supply as method on method.item_sku = item.sku WHERE method.method = '
+                  '"itemdemand" and storage_id = %s;', (storage['id'],))
+
+for item in d6_cursor:
+    itemsdemand.append(item)
+
+msg = {'type_message': 'request', 'request_type': 'get', 'get': 'itzamara/items_factor_related',
+       'query': {'items': itemsdemand}}
+
+answer = agent_itzamara(msg)
+itemsdemand = answer['items']
+end = datetime.date.today() - datetime.timedelta(days=1)
+period = isodate.parse_duration('P15D')
+start = end - period
+d6_cursor = d8757_6.cursor()
+storage = {'id': 'serena_store-1'}
+
+based = 'valentine.transaction'
+
+for itemdemand in itemsdemand:
+    if based == 'valentine.transaction' or based is None:
+        def _help(_item, _begin, _end):
+            if isinstance(_begin, datetime.datetime):
+                _begin = _begin.date()
+
+            if isinstance(_end, datetime.datetime):
+                _end = _end.date()
+
+            _end = _end + datetime.timedelta(days=1)
+            d6_cursor.execute('select ifnull(sum(-quanty), 0) from valentine.transaction where storage_id = %s and '
+                              'item_sku = %s and origen_type IN %s and datetime > %s and datetime < %s and quanty < 0 limit 1;',
+                              (storage['id'], _item['sku'], ['serena/sale', 'serena/ticket', 'donell/production', 'serena/sale_note', 'valentine/transfer'], _begin, _end))
+            quanty = d6_cursor.fetchone()[0]
+            # these others isses should substract the quanty that consumes, sells or producess the storage,
+            # these just should be substracted with somes returns of merchandise only thins that make that the first changes
+            # d6_cursor.execute('select ifnull(sum(-quanty), 0) from valentine.transaction where storage_id = %s and '
+            #                   'item_sku = %s and origen_type IN %s and datetime > %s and datetime < %s and quanty > 0 limit 1;',
+            #                   (storage['id'], _item['sku'],
+            #                    ['bethesda/purchase''donell/production', 'valentine/transfer'], _begin, _end))
+            return quanty
+    elif based == 'serena.items_sold':
+
+        d6_cursor.execute('SELECT IFNULL(SUM(quanty), 0) FROM serena.item_sold_daily WHERE date BETWEEN %s and %s and '
+                          'item_sku = %s and store_id = %s', (start, end, itemdemand['sku'], 'serena_store-1'))
+        itemdemand['demand'], = d6_cursor.fetchone()
+        for itemrelated in itemdemand['items_related']:
+            d6_cursor.execute('SELECT IFNULL(SUM(quanty), 0) FROM serena.item_sold_daily WHERE date between %s and %s and '
+                              'item_sku = %s and store_id = %s', (start, end, itemrelated['sku'], 'serena_store-1'))
+            itemrelated['demand'], = d6_cursor.fetchone()
+
+
+def set_demand_absolut(_item):
+    _item['demand_absolut'] = _item['demand']
+    if 'items_related' in _item:
+        demand_factorized = Decimal()
+        for _itemrelated in _item['items_related']:
+            if _itemrelated['factor_type'] == 'lowest_common':
+                if _itemrelated['demand'] > Decimal():
+                    demand_factorized += _itemrelated['demand'] / _itemrelated['factor']
+                lowestcommonfactor = _itemrelated['factor']
+                break
+        else:
+            lowestcommonfactor = None
+        for _itemrelated in _item['items_related']:
+            if _itemrelated['factor_type'] == 'up':
+                demand_factorized += _itemrelated['demand'] * _itemrelated['factor']
+            elif _itemrelated['factor_type'] == 'down':
+                if _itemrelated['demand'] > Decimal():
+                    demand_factorized += _itemrelated['demand'] / _itemrelated['factor']
+            elif _itemrelated['factor_type'] == 'lowest':
+                if _itemrelated['demand'] > Decimal():
+                    demand_factorized += (_itemrelated['demand'] / lowestcommonfactor) * _itemrelated['factor']
+        _item['demand_absolut'] += demand_factorized
+    _item['demand_absolut'] = round(_item['demand_absolut'], 3)
+
+d6_cursor.execute('delete from valentine.item_demand where storage_id = %s;', ('serena_store-1',))
+for item in itemsdemand:
+    set_demand_absolut(item)
+    result = d6_cursor.execute('insert into valentine.item_demand (item_sku, item_description, period, demand, '
+                               'storage_id, storage_type) VALUES (%(item_sku)s, %(item_description)s, %(period)s, '
+                               '%(demand)s, "serena_store-1", "valentine/storage") ON DUPLICATE KEY UPDATE demand = '
+                               'values(demand), period = VALUES(period);',
+                               {'item_sku': item['sku'], 'item_description': item['description'],
+                                'period': isodate.duration_isoformat(period),
+                                'demand': item['demand_absolut']})
+d6_cursor.close()
+d8757_6.close()
+print('ready')

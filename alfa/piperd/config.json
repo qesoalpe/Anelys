@@ -1,0 +1,13 @@
+{
+  "mongo": {
+    "conn": {
+      "host": "mongodb://127.0.0.1"
+    }
+  },
+  "d8757_6": {
+    "host": "127.0.0.1",
+    "port": 3306,
+    "user": "anelys",
+    "autocommit": true
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "8757-6":{
+    "conn": {
+      "host": "127.0.0.1",
+      "user": "anelys",
+      "autocommit": true
+    }
+  },
+  "mongo":{
+    "conn": {
+      "host": "mongodb://127.0.0.1:27017"
+    }
+  },
+  "8757-5": {
+    "rest_endpoint": "http://127.0.0.1:7474/db/data",
+    "bolt_endpoint": "bolt://127.0.0.1",
+    "auth": {
+      "password": "47exI4",
+      "username": "alejandro"
+    }
+  }
+}
