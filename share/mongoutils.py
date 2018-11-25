@@ -24,6 +24,8 @@ class Filter_Mongo:
                 assert path is not None
                 assert path not in self.dict
                 self.dict[path] = {'$exists': v1}
+            elif k1 == '!like':
+                self.dict[path] = v1
             elif isinstance(v1, dict):
                 filter = Filter_Mongo()
                 self.tree[k1] = filter

@@ -21,10 +21,10 @@ class Search_Storage(Dialog_Search_Text):
         table = Table()
         e['table'] = table
         table.columns.add('id', str)
-        # table.columns.add('type', str)
-        table.columns.add('storage_type', str)
+        table.columns.add('type', str)
         table.columns.add('name', str)
         table.columns.add('address', str)
+        table.columns['type'].getter_data = ['storage_type', 'type']
         table.datasource = e.list
         
 

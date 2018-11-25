@@ -19,9 +19,10 @@ from isis.message_box import Message_Box
 from PySide2.QtGui import QValidator
 from isis.check_box import Check_Box
 from sarah.acp_bson import Client
-pp = 22
+from utils import find_one
+from isis.valentine.widget_viewer_supplier import Widget_Viewer_Supplier
 
-adslsa = 559
+
 agent_valentine = Client('', 'valentine')
 
 answer = agent_valentine({'type_message': 'find', 'type': 'valentine/storage', 'query': {}})
@@ -42,6 +43,36 @@ validator_duration_iso8601 = Validator_Iso8601()
 demand_maximum_default = parse_duration('P30D')
 demand_reoder_point_default = parse_duration('P15D')
 
+from isis.valentine.inventory_in_storages import Inventory_In_Storages
+
+
+def open_view_inventory_in_storages(parent, item, current_storage=None):
+    from copy import deepcopy
+    item = deepcopy(item)
+    if current_storage is not None:
+        current_storage = dict({'inventory': item.inventory,
+                                'storage': {'id': current_storage.id, 'name': current_storage.name}})
+    for k in list(item.keys()):
+        if k not in ['sku', 'description', 'other_storages']:
+            del item[k]
+    if 'other_storages' in item:
+        item.inventory = item.other_storages
+        del item.other_storages
+    for inv in item.inventory:
+        storage = find_one(lambda x: x.id == inv.storage.id, storages)
+        inv.storage = {'id': storage.id, 'name': storage.name}
+        if 'storage_type' in storage:
+            inv.storage.type = storage.storage_type
+        elif 'type' in storage:
+            inv.storage.type = storage.type
+    if current_storage is not None:
+        item.inventory.append(current_storage)
+    item.inventory.sort(key=lambda x: x.storage.name)
+
+    dialog = Inventory_In_Storages(parent)
+    dialog.item = item
+    dialog.show()
+
 
 class Items_Model(Table):
     def __init__(self):
@@ -50,7 +81,7 @@ class Items_Model(Table):
         columns.add('sku', str)
         columns.add('description', str)
         columns.add('method', str)
-        columns.add('other_storage', D, '#,##0.###')
+        columns.add('other_storages', D, '#,##0.###')
         columns.add('for_arrive', D, '#,##0.###')
         columns.add('inventory', D, '#,##0.###')
         columns.add('demand', str)
@@ -61,6 +92,7 @@ class Items_Model(Table):
         columns.add('demand_maximum', str)
         columns.add('supply_suggested', D, '#,##0.###')
         columns['inventory'].getter_data = ['inventory_absolut', 'inventory']
+        columns['other_storages'].getter_data = 'other_storages_sum'
         columns['covered'].getter_data = ['covered_error_str', 'covered_str', 'covered']
         columns['demand'].getter_data = self.demand_getter_data
         columns['demand_maximum'].read_only = False
@@ -102,6 +134,20 @@ class Items_View(Table_View):
         Table_View.__init__(self, *args, **kwargs)
         self.setSelectionBehavior(self.SelectRows)
         self.setSelectionMode(self.SingleSelection)
+        self.create_context_menu.suscribe(self.create_menu)
+        self.storage = None
+
+    def create_menu(self, item, column):
+        menu = list([
+            {'text': 'View inventory in each storage',
+             'suscriber': lambda: open_view_inventory_in_storages(self, item, self.storage),
+             'enabled': 'other_storages' in item},
+            {
+                "text": 'Force to get other_storages',
+                'suscriber': lambda x: print(555)
+            }
+        ])
+        return menu
 
 
 class Sort_Filter_Proxy_Model_Items(QSortFilterProxyModel):
@@ -110,6 +156,10 @@ class Sort_Filter_Proxy_Model_Items(QSortFilterProxyModel):
         self._regex = None
         self.items = None
         self.txt_search = ''
+        self.col_inventory = None
+        self.col_description = None
+        self.col_covered = None
+        self.col_demand = None
 
     @property
     def regex(self):
@@ -134,31 +184,26 @@ class Sort_Filter_Proxy_Model_Items(QSortFilterProxyModel):
             return True
 
     def lessThan(self, left, right):
-        col_inventory = self.sourceModel().columns['inventory']
-        col_description = self.sourceModel().columns['description']
-        col_covered = self.sourceModel().columns['covered']
-        col_demand = self.sourceModel().columns['demand']
         i = left.column()
-
-        if i == col_inventory.index:
+        if i == self.col_inventory.index:
             left = self.items[left.row()]
             right = self.items[right.row()]
-            left = col_inventory.get_data(left)
-            right = col_inventory.get_data(right)
+            left = self.col_inventory.get_data(left)
+            right = self.col_inventory.get_data(right)
             if left is not None and right is not None:
                 return left < right
             return False
-        elif i == col_description.index:
+        elif i == self.col_description.index:
             left = self.items[left.row()]
             right = self.items[right.row()]
             return key_to_sort_item(left) < key_to_sort_item(right)
-        elif i == col_covered.index:
+        elif i == self.col_covered.index:
             left = self.items[left.row()]
             right = self.items[right.row()]
             left = left.covered.total_seconds() if 'covered' in left else 0
             right = right.covered.total_seconds() if 'covered' in right else 0
             return left < right
-        elif i == col_demand.index:
+        elif i == self.col_demand.index:
             left = self.items[left.row()]
             right = self.items[right.row()]
             left = left.demand.comparable if 'demand' in left else 0
@@ -170,6 +215,10 @@ class Sort_Filter_Proxy_Model_Items(QSortFilterProxyModel):
     def setSourceModel(self, model):
         QSortFilterProxyModel.setSourceModel(self, model)
         self.items = model.datasource
+        self.col_inventory = model.columns['inventory']
+        self.col_description = model.columns['description']
+        self.col_covered = model.columns['covered']
+        self.col_demand = model.columns['demand']
 
         def any(*args):
             self.items = self.sourceModel().datasource
@@ -197,6 +246,8 @@ class Widget(Widget_cls):
         self.widget_storage = Widget_Viewer_Storage(self)
         self.widget_storage.with_button_change = True
 
+        self.widget_supplier = Widget_Viewer_Supplier(self)
+
         lbl_demand_maximum = Label('Demanda Maxima: ', self)
         self.txt_demand_maximum = Line_Edit(self)
 
@@ -217,6 +268,7 @@ class Widget(Widget_cls):
         layout.addWidget(self.txt_search_text)
         self.layout.addLayout(layout)
         self.layout.addWidget(self.widget_storage)
+        self.layout.addWidget(self.widget_supplier)
         layout = H_Box_Layout()
         layout.addWidget(lbl_demand_reorder_point)
         layout.addWidget(self.txt_demand_reorder_point)
@@ -266,6 +318,16 @@ class Widget(Widget_cls):
             self.txt_demand_maximum.text = self._demand_maximum_str
             return
         self.demand_maximum = parse_duration(self.txt_demand_maximum.text)
+
+    @property
+    def storage(self):
+        return self._storage
+
+    @storage.setter
+    def storage(self, storage):
+        self._storage = storage
+        self.model.storage = storage
+        self.tableview.storage = storage
 
     @property
     def manage_items_supply(self):
@@ -328,83 +390,104 @@ class Widget(Widget_cls):
     @manage_items_supply.setter
     def manage_items_supply(self, mis):
         if mis is not None:
-
-            if isinstance(mis, str):
-                mis = d1.valentine.manage_items_supply.find_one({'id': '226-1'}, {'_id': False})
-            # from piper.remote import get_provider_sells
-            # provider_sells_sku = [item.sku for item in get_provider_sells('61-10')]
-            #
-            # mis['items'] = [item for item in mis['items'] if item.sku in provider_sells_sku]
-            d6.ping(True)
-            d6_cursor = d6.cursor()
-            from valentine.remote import get_inventory_absolut as get_inventory
-            mis['items'] = get_inventory(mis['items'])
+            storage = mis.storage
+            self.storage = storage
             mis['items'].sort(key=key_to_sort_item)
             self._mis = mis
-
-            storage = mis.storage
-            for item in mis['items']:
-                if 'inventory_absolut' in item:
-                    item.inventory = item.inventory_absolut
-                    del item.inventory_absolut
-                r = d6_cursor.execute('select demand, period from valentine.item_demand '
-                                      'where storage_id = %s and item_sku = %s limit 1;',
-                                      (storage.id, item.sku))
-                if r == 1:
-                    demand, period = d6_cursor.fetchone()
-                    item.demand = dict({'n': demand, 'period': parse_duration(period), 'period_str': period})
-
-                    total_seconds = item.demand.period.total_seconds()
-
-                    if item.demand.n != 0 and total_seconds != 0:
-                        item.demand.comparable = item.demand.n / D(total_seconds)
-                    else:
-                        item.demand.comparable = 0
-
-                    if item.inventory != D() and item.demand.n == D():
-                        item.covered_error_str = 'demanda nula'
-                    elif item.inventory == D() and item.demand.n > D():
-                        item.covered = parse_duration('P0D')
-                        item.covered_str = 'P0D'
-                    elif item.inventory == D() and item.demand.n <= D():
-                        item.covered_error_str = 'inventario insuficiente & demanda nula'
-                    else:
-                        item.covered = item.demand.period * round(float(item.inventory / item.demand.n), 3)
-                        item.covered_str = duration_isoformat(item.covered)
-
-                r = d6_cursor.execute('select maximum, reorder_point, method, demand_maximum, demand_reorder_point '
-                                      'from valentine.method_evaluation_supply '
-                                      'where storage_id = %s and item_sku = %s limit 1;',
-                                      (storage.id, item.sku))
-                if r == 1:
-                    maximum, reorder_point, method, demand_maximum, demand_reorder_point = d6_cursor.fetchone()
-                    if maximum is not None:
-                        item.maximum = maximum
-
-                    if reorder_point is not None:
-                        item.reorder_point = reorder_point
-                    if method is not None:
-                        item.method = method
-
-                    if demand_maximum is not None or demand_reorder_point is not None:
-                        if 'demand' not in item:
-                            item.demand = {}
-                        if demand_maximum is not None:
-                            item.demand.maximum = parse_duration(demand_maximum)
-                            item.demand.maximum_str = demand_maximum
-                        if demand_reorder_point is not None:
-                            item.demand.reorder_point = parse_duration(demand_reorder_point)
-                            item.demand.reorder_point_str = demand_reorder_point
-
-                supply_suggested = self.get_supply_suggested(item)
-                if supply_suggested is not None:
-                    item.supply_suggested = supply_suggested
-                elif 'supply_suggested' in item:
-                    del item.supply_suggested
             self.model.datasource = mis['items']
+            import threading
+            t = threading.Thread(target=self.start_async_fetch_other_fields)
+            t.start()
 
+    def start_async_fetch_other_fields(self):
+        from valentine.remote import get_inventory
+        mis = self.manage_items_supply
 
-    def async
+        d6.ping(True)
+        d6_cursor = d6.cursor()
+        items = mis['items']
+        storage = mis.storage
+
+        inventory = get_inventory([{'sku': item.sku} for item in items], self.storage)
+        for item, inv in zip(items, (inv.inventory for inv in inventory)):
+            item.inventory = inv
+
+        self.model.modelReset.emit()
+
+        for item in items:
+            r = d6_cursor.execute('select demand, period from valentine.item_demand '
+                                  'where storage_id = %s and item_sku = %s limit 1;',
+                                  (storage.id, item.sku))
+            if r == 1:
+                demand, period = d6_cursor.fetchone()
+                item.demand = dict({'n': demand, 'period': parse_duration(period), 'period_str': period})
+
+                total_seconds = item.demand.period.total_seconds()
+
+                if item.demand.n != 0 and total_seconds != 0:
+                    item.demand.comparable = item.demand.n / D(total_seconds)
+                else:
+                    item.demand.comparable = 0
+
+                if item.inventory != D() and item.demand.n == D():
+                    item.covered_error_str = 'demanda nula'
+                elif item.inventory == D() and item.demand.n > D():
+                    item.covered = parse_duration('P0D')
+                    item.covered_str = 'P0D'
+                elif item.inventory == D() and item.demand.n <= D():
+                    item.covered_error_str = 'inventario insuficiente & demanda nula'
+                else:
+                    item.covered = item.demand.period * round(float(item.inventory / item.demand.n), 3)
+                    item.covered_str = duration_isoformat(item.covered)
+
+        self.model.modelReset.emit()
+
+        for item in items:
+            r = d6_cursor.execute('select maximum, reorder_point, method, demand_maximum, demand_reorder_point '
+                                  'from valentine.method_evaluation_supply '
+                                  'where storage_id = %s and item_sku = %s limit 1;',
+                                  (storage.id, item.sku))
+            if r == 1:
+                maximum, reorder_point, method, demand_maximum, demand_reorder_point = d6_cursor.fetchone()
+                if maximum is not None:
+                    item.maximum = maximum
+
+                if reorder_point is not None:
+                    item.reorder_point = reorder_point
+                if method is not None:
+                    item.method = method
+
+                if demand_maximum is not None or demand_reorder_point is not None:
+                    if 'demand' not in item:
+                        item.demand = {}
+                    if demand_maximum is not None:
+                        item.demand.maximum = parse_duration(demand_maximum)
+                        item.demand.maximum_str = demand_maximum
+                    if demand_reorder_point is not None:
+                        item.demand.reorder_point = parse_duration(demand_reorder_point)
+                        item.demand.reorder_point_str = demand_reorder_point
+
+        self.model.modelReset.emit()
+        d6_cursor.close()
+
+        for item in items:
+            supply_suggested = self.get_supply_suggested(item)
+            if supply_suggested is not None:
+                item.supply_suggested = supply_suggested
+            elif 'supply_suggested' in item:
+                del item.supply_suggested
+        other_storage = list(storage for storage in storages if storage.id != self.storage.id)
+        items = list({'sku': item.sku} for item in self.manage_items_supply['items'])
+        msg = dict({'type_message': 'request', 'request_type': 'get', 'get': 'valentine/inventory_absolut',
+                    'storages': other_storage, 'items': items, 'projection': {'inventory': True}})
+        answer = agent_valentine(msg)
+        # index = 0
+        for item, inventory in zip(self.manage_items_supply['items'], answer['items']):
+            item.other_storages = inventory.inventory
+            item.other_storages_sum = sum(inv.inventory for inv in item.other_storages)
+        #     self.model.notify_row_changed(index)
+        #     index += 1
+        self.model.modelReset.emit()
 
     def get_supply_suggested(self, item):
         if item.method in ['itemdemand', 'demand'] and 'demand' in item and 'covered' in item:
@@ -441,7 +524,7 @@ class Manage_Items_Supply(Main_Window):
         d6_cursor = d6.cursor(pymysql.cursors.SSDictCursor)
         d6_cursor.execute('select distinct item.sku, item.description from itzamara.item '
                           'inner join valentine.method_evaluation_supply as method '
-                          'on method.item_sku = item.sku where storage_id = \'42-3\' ')
+                          'on method.item_sku = item.sku where storage_id = \'42-3\';')
         items = list(d6_cursor.fetchall())
         cwidget.manage_items_supply = dict(
             {'items': items, 'storage': d1.valentine.storage.find_one({'id': '42-3'})}

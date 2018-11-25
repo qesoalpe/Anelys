@@ -54,8 +54,12 @@ class Radio_Group(QGroupBox):
     @value.setter
     def value(self, value):
         for item in self.items:
-            if item.value is not None and item.value == value:
+            if value is None:
+                if item.value is None:
+                    item.radiobutton.setChecked(True)
+                    break
+            elif item.value is not None and item.value == value:
                 item.radiobutton.setChecked(True)
+                break
         else:
             raise ValueError(value)
-

@@ -1,4 +1,8 @@
 from PySide2.QtWidgets import QTableView
+from PySide2.QtCore import Qt
+from isis.event import Event
+from isis.menu import Menu
+from PySide2.QtWidgets import QAction, QMenu
 
 
 class Table_View(QTableView):
@@ -11,6 +15,7 @@ class Table_View(QTableView):
         self._edrws = False
         self.title_question_delete_row = None
         self.text_question_delete_row = None
+        self.create_context_menu = Event()
 
     def setModel(self, model):
         QTableView.setModel(self, model)
@@ -34,7 +39,6 @@ class Table_View(QTableView):
 
     def keyPressEvent(self, event):
         if self._edrws:
-            from PySide2.QtCore import Qt
             if event.key() == Qt.Key_Delete:
                 index = self.currentIndex()
                 if index.isValid():
@@ -55,6 +59,37 @@ class Table_View(QTableView):
                 return QTableView.keyPressEvent(self, event)
         else:
             return QTableView.keyPressEvent(self, event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            if len(self.create_context_menu):
+                index = self.indexAt(event.pos())
+                if index.isValid():
+                    model = self.model
+                    from PySide2.QtCore import QSortFilterProxyModel
+                    if isinstance(model, QSortFilterProxyModel):
+                        index = model.mapToSource(index)
+                        model = model.sourceModel()
+
+                    item = model.datasource[index.row()]
+                    column = model.columns[index.column()]
+                    menu = self.create_context_menu(item, column)
+                    if menu is not None:
+                        if isinstance(menu, list):
+                            the_menu = Menu(self)
+                            # the_menu.addAction('this is a test')
+                            for action in menu:
+                                the_action = the_menu.addAction('')
+                                for k, v in action.items():
+                                    if k == 'text':
+                                        the_action.setText(v)
+                                    elif k == 'suscriber':
+                                        the_action.triggered.connect(v)
+                                    elif k == 'enabled':
+                                        the_action.setEnabled(v)
+                            the_menu.popup(event.globalPos())
+
+        QTableView.mousePressEvent(self, event)
 
     @property
     def model(self):

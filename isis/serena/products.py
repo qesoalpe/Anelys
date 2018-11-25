@@ -28,7 +28,9 @@ class Productos_Model(Table):
 
 
 class Products_TV(Table_View):
-    pass
+    def __init__(self, *args, **kwargs):
+        Table_View.__init__(self, *args, **kwargs)
+        self.setSelectionBehavior(self.SelectRows)
 
 
 class Products(Main_Window):

@@ -8,7 +8,7 @@ def make_movement(items=None, storage=None, origen=None, type=None, from_=None, 
     if type is not None:
         msg.mov_type = type
 
-    if from_ is  None or to is None and storage is not None:
+    if from_ is None or to is None and storage is not None:
         msg.storage = storage
     elif from_ is not None and to is not None:
         msg['from'] = from_
@@ -16,10 +16,12 @@ def make_movement(items=None, storage=None, origen=None, type=None, from_=None, 
     return agent_valentine(msg)
 
 
-def get_inventory_absolut(item_or_items, storage=None):
+def get_inventory_absolut(item_or_items, storage=None, projection=None):
     msg = dict({'type_message': 'request', 'request_type': 'get', 'get': 'valentine/inventory_absolut'})
     if storage is not None:
         msg.storage = storage
+    if projection is not None:
+        msg.projection = projection
     if isinstance(item_or_items, list):
         msg['items'] = item_or_items
     else:
@@ -30,6 +32,10 @@ def get_inventory_absolut(item_or_items, storage=None):
         return a['items']
     else:
         return a.item
+
+
+def get_inventory(item_or_items, storage):
+    return get_inventory_absolut(item_or_items, storage, {'inventory': True})
 
 
 def find_one_storage(query):

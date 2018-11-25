@@ -1,11 +1,10 @@
-class Event():
+class Event:
     def __init__(self):
         self._suscribers = list()
 
     def suscribe(self, suscriber):
         if suscriber not in self._suscribers:
             self._suscribers.append(suscriber)
-
 
     def unsuscribe(self, suscriber):
         if suscriber in self._suscribers:
