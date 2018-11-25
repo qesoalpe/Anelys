@@ -38,7 +38,6 @@ map_collection = {'serena/order': coll_order,
 local_store = current_store = coll_store.find_one({'id': '42-3'})
 
 
-
 def __handle_action_serena_close_sale_ver_1(msg):
     sale = msg.sale
     doc_items = list()
